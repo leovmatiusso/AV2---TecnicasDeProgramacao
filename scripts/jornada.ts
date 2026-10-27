@@ -1,13 +1,14 @@
 import { strict as assert } from 'node:assert';
 import { randomBytes } from 'node:crypto';
 import { mkdtemp, rm } from 'node:fs/promises';
-import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { criarCredencial } from '../src/security.js';
 import { ServicoDominio } from '../src/services.js';
 import { RepositorioArquivo } from '../src/storage.js';
 
-const diretorio = await mkdtemp(join(tmpdir(), 'greencode-jornada-'));
+const diretorio = await mkdtemp(
+  join(process.cwd(), '.greencode-jornada-'),
+);
 
 try {
   console.log('\n=== Jornada automatizada do GreenCode ===');

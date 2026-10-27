@@ -7,8 +7,9 @@ import {
   randomUUID,
   timingSafeEqual,
 } from 'node:crypto';
-import { chmod, mkdir, readFile, writeFile } from 'node:fs/promises';
+import { chmod, mkdir, readFile, rename, writeFile } from 'node:fs/promises';
 import { join } from 'node:path';
+import { setTimeout as aguardar } from 'node:timers/promises';
 import { ErroNegocio, type PapelUsuario } from './domain.js';
 
 export interface ConfigMestre {
@@ -185,6 +186,31 @@ export const gravarPrivado = async (path: string, data: string): Promise<void> =
 
   if (process.platform !== 'win32') {
     await chmod(path, 0o600);
+  }
+};
+
+export const renomearComTentativas = async (
+  origem: string,
+  destino: string,
+): Promise<void> => {
+  const maxTentativas = 5;
+
+  for (let tentativa = 0; tentativa < maxTentativas; tentativa += 1) {
+    try {
+      await rename(origem, destino);
+      return;
+    } catch (erro) {
+      const codigo = (erro as NodeJS.ErrnoException).code;
+      const podeTentarNovamente = ['EPERM', 'EACCES', 'EBUSY'].includes(
+        codigo ?? '',
+      );
+
+      if (!podeTentarNovamente || tentativa === maxTentativas - 1) {
+        throw erro;
+      }
+
+      await aguardar(20 * 2 ** tentativa);
+    }
   }
 };
 

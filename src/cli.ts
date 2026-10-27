@@ -1,7 +1,9 @@
+//2,5
 import { createInterface, type Interface } from 'node:readline';
 import { homedir } from 'node:os';
+//7
 import { join } from 'node:path';
-import { mkdir, readFile, rename } from 'node:fs/promises';
+import { mkdir, readFile } from 'node:fs/promises';
 import {
   ErroNegocio,
   estadosFisicos,
@@ -9,15 +11,21 @@ import {
   statusRastreamento,
   type EstadoFisico,
   type PapelUsuario,
+  //6
   type StatusRastreamento,
+  //1
   type TipoEquipamento,
 } from './domain.js';
+//4
 import {
+  //8
   carregarConfig,
   cifrar,
   decifrar,
+  //3
   gravarPrivado,
   novoConfig,
+  renomearComTentativas,
   ServicoAutenticacao,
   validarSenha,
 } from './security.js';
@@ -44,6 +52,10 @@ const palavrasCompletaveis = [
   'logout',
   'sair',
   'criar',
+  'atualizar',
+  'excluir',
+  'desativar',
+  'reativar',
   'cadastrar',
   'listar',
   'adicionar',
@@ -231,7 +243,7 @@ const salvarConfig = async (
   const temporario = `${caminho}.tmp`;
 
   await gravarPrivado(temporario, JSON.stringify(config, null, 2));
-  await rename(temporario, caminho);
+  await renomearComTentativas(temporario, caminho);
 };
 
 const provisionar = async (
@@ -275,14 +287,20 @@ const exibirAjuda = (): void => {
 GreenCode - logística reversa
   login
   usuario criar --usuario N --papel administrador|operador_cadastro|gestor_almoxarifado|auditor
-  usuario listar | usuario desativar --usuario N | usuario reativar --usuario N
+  usuario listar | usuario atualizar --usuario N --papel auditor
+  usuario desativar --usuario N | usuario reativar --usuario N
   organizacao cadastrar --razao "Nome" --cnpj 00000000000000 --email contato@empresa.com [--telefone ... --endereco ...]
-  organizacao listar | organizacao desativar --id ID
-  contrato criar --org ID --vencimento AAAA-MM-DD --valor 1200 | contrato renovar --org ID --vencimento AAAA-MM-DD
+  organizacao listar | organizacao atualizar --id ID [--razao ... --cnpj ... --email ... --telefone ... --endereco ...]
+  organizacao desativar --id ID
+  contrato criar --org ID --vencimento AAAA-MM-DD --valor 1200
+  contrato listar --org ID | contrato renovar --org ID --vencimento AAAA-MM-DD | contrato cancelar --org ID
   parametros ver | parametros definir --imposto 12.5 --depreciacao 0.15
   lote criar --org ID --nf 123456 --transp Transportadora [--data AAAA-MM-DD]
-  lote listar
+  lote listar | lote atualizar --id ID [--nf ... --transp ... --obs ... --data AAAA-MM-DD]
+  lote excluir --id ID (somente antes da triagem e sem equipamentos)
   equipamento adicionar --lote ID --tipo notebook --marca X --modelo Y --ano 2022 --estado bom_estado --peso 2.5
+  equipamento listar [--lote ID] | equipamento atualizar --id ID [--marca ... --modelo ... --tipo ... --ano ... --peso ...]
+  equipamento excluir --id ID (somente antes de movimentações)
   triagem iniciar --lote ID | triagem concluir --lote ID
   equipamento mover --id ID|CODIGO --status STATUS --responsavel Nome [--obs Texto]
     status: em_triagem|aguardando_desmonte|em_desmonte|pecas_reaproveitadas|material_reciclavel|descarte_seguro|baixa_definitiva
@@ -372,7 +390,7 @@ async function main(): Promise<void> {
       const conteudoHistorico = cifrar(historicoAtual, config.chaveCriptografia);
 
       await gravarPrivado(`${caminhoHistorico}.tmp`, conteudoHistorico);
-      await rename(`${caminhoHistorico}.tmp`, caminhoHistorico);
+      await renomearComTentativas(`${caminhoHistorico}.tmp`, caminhoHistorico);
 
       const partes = tokenizar(linha);
 
@@ -439,7 +457,12 @@ async function main(): Promise<void> {
         const usuario =
           obterArgumento(argumentos, 'usuario', 0) ??
           (await perguntar('Usuário: ')).trim();
-        const papelNovo = argumentos.papel?.toUpperCase() as PapelUsuario;
+        const papelDigitado =
+          argumentos.papel ??
+          (await perguntar(
+            'Papel (administrador, operador_cadastro, gestor_almoxarifado ou auditor): ',
+          )).trim();
+        const papelNovo = papelDigitado.toUpperCase() as PapelUsuario;
 
         exigir(papeis.includes(papelNovo), 'Papel inválido.');
 
@@ -458,6 +481,20 @@ async function main(): Promise<void> {
             ativo,
           })),
         );
+      } else if (entidade === 'usuario' && acao === 'atualizar') {
+        exigir(pode(papelAtual, 'administrar'), 'Apenas administrador pode alterar usuários.');
+
+        const papelDigitado = argumentos.papel?.toUpperCase() as PapelUsuario;
+
+        exigir(papeis.includes(papelDigitado), 'Informe um papel válido com --papel.');
+
+        await servico.alterarPapel(
+          argumentos.usuario ?? argumentos._0 ?? '',
+          papelDigitado,
+          usuarioAtual,
+        );
+
+        console.log('Papel do usuário atualizado.');
       } else if (
         entidade === 'usuario' &&
         (acao === 'desativar' || acao === 'reativar')
@@ -500,6 +537,34 @@ async function main(): Promise<void> {
             ativo,
           })),
         );
+      } else if (entidade === 'organizacao' && acao === 'atualizar') {
+        exigir(pode(papelAtual, 'cadastro'), 'Sem permissão para alterar organizações.');
+
+        const alteracoes: {
+          razaoSocial?: string;
+          cnpj?: string;
+          inscricaoEstadual?: string;
+          enderecoCompleto?: string;
+          telefone?: string;
+          email?: string;
+        } = {};
+
+        if (argumentos.razao !== undefined) alteracoes.razaoSocial = argumentos.razao;
+        if (argumentos.cnpj !== undefined) alteracoes.cnpj = argumentos.cnpj;
+        if (argumentos.ie !== undefined) alteracoes.inscricaoEstadual = argumentos.ie;
+        if (argumentos.endereco !== undefined) alteracoes.enderecoCompleto = argumentos.endereco;
+        if (argumentos.telefone !== undefined) alteracoes.telefone = argumentos.telefone;
+        if (argumentos.email !== undefined) alteracoes.email = argumentos.email;
+
+        exigir(Object.keys(alteracoes).length > 0, 'Informe ao menos um campo para atualizar.');
+
+        const organizacao = await servico.atualizarOrganizacao(
+          argumentos.id ?? argumentos._0 ?? '',
+          alteracoes,
+          usuarioAtual,
+        );
+
+        console.log(`Organização atualizada: ${organizacao.id}.`);
       } else if (entidade === 'organizacao' && acao === 'desativar') {
         exigir(pode(papelAtual, 'cadastro'), 'Sem permissão para alterar organizações.');
 
@@ -520,6 +585,18 @@ async function main(): Promise<void> {
         );
 
         console.log('Contrato criado.');
+      } else if (entidade === 'contrato' && acao === 'listar') {
+        exigir(pode(papelAtual, 'consultar'), 'Sem permissão para consultar contratos.');
+
+        const organizacao = await servico.buscarOrganizacao(
+          argumentos.org ?? argumentos._0 ?? '',
+        );
+
+        if (organizacao.contratoVigente) {
+          console.log(JSON.stringify(organizacao.contratoVigente, null, 2));
+        } else {
+          console.log('A organização não possui contrato cadastrado.');
+        }
       } else if (entidade === 'contrato' && acao === 'renovar') {
         exigir(pode(papelAtual, 'cadastro'), 'Sem permissão para renovar contrato.');
 
@@ -530,6 +607,15 @@ async function main(): Promise<void> {
         );
 
         console.log('Contrato renovado.');
+      } else if (entidade === 'contrato' && acao === 'cancelar') {
+        exigir(pode(papelAtual, 'cadastro'), 'Sem permissão para cancelar contratos.');
+
+        await servico.cancelarContrato(
+          argumentos.org ?? argumentos._0 ?? '',
+          usuarioAtual,
+        );
+
+        console.log('Contrato cancelado; o registro permanece no histórico.');
       } else if (
         entidade === 'parametros' &&
         (acao === 'ver' || acao === 'definir')
@@ -613,6 +699,35 @@ async function main(): Promise<void> {
             }),
           ),
         );
+      } else if (entidade === 'lote' && acao === 'atualizar') {
+        exigir(pode(papelAtual, 'estoque'), 'Sem permissão para atualizar lotes.');
+
+        const alteracoes: {
+          notaFiscal?: string;
+          transportadora?: string;
+          observacoes?: string;
+          dataEntrada?: string;
+        } = {};
+
+        if (argumentos.nf !== undefined) alteracoes.notaFiscal = argumentos.nf;
+        if (argumentos.transp !== undefined) alteracoes.transportadora = argumentos.transp;
+        if (argumentos.obs !== undefined) alteracoes.observacoes = argumentos.obs;
+        if (argumentos.data !== undefined) alteracoes.dataEntrada = argumentos.data;
+
+        exigir(Object.keys(alteracoes).length > 0, 'Informe ao menos um campo para atualizar.');
+
+        await servico.atualizarLote(
+          argumentos.id ?? argumentos._0 ?? '',
+          alteracoes,
+          usuarioAtual,
+        );
+
+        console.log('Lote atualizado.');
+      } else if (entidade === 'lote' && acao === 'excluir') {
+        exigir(pode(papelAtual, 'estoque'), 'Sem permissão para excluir lotes.');
+
+        await servico.excluirLote(argumentos.id ?? argumentos._0 ?? '', usuarioAtual);
+        console.log('Lote excluído.');
       } else if (entidade === 'equipamento' && acao === 'adicionar') {
         exigir(pode(papelAtual, 'estoque'), 'Sem permissão para cadastrar equipamento.');
 
@@ -632,6 +747,60 @@ async function main(): Promise<void> {
         console.log(
           `Equipamento registrado: ${equipamento.codigoBarrasInterno} (${equipamento.id}).`,
         );
+      } else if (entidade === 'equipamento' && acao === 'listar') {
+        exigir(pode(papelAtual, 'consultar'), 'Sem permissão.');
+
+        const loteId = argumentos.lote;
+        const equipamentos = servico.estado().equipamentos.filter(
+          (item) => !loteId || item.loteId === loteId,
+        );
+
+        console.table(
+          equipamentos.map(({ id, codigoBarrasInterno, loteId: idLote, tipo, statusRastreamento }) => ({
+            id,
+            codigoBarrasInterno,
+            lote: idLote,
+            tipo,
+            status: statusRastreamento,
+          })),
+        );
+      } else if (entidade === 'equipamento' && acao === 'atualizar') {
+        exigir(pode(papelAtual, 'estoque'), 'Sem permissão para atualizar equipamentos.');
+
+        const alteracoes: {
+          tipo?: TipoEquipamento;
+          marca?: string;
+          modelo?: string;
+          anoFabricacao?: number;
+          pesoQuilogramas?: number;
+        } = {};
+
+        if (argumentos.tipo !== undefined) {
+          alteracoes.tipo = argumentos.tipo.toUpperCase() as TipoEquipamento;
+        }
+        if (argumentos.marca !== undefined) alteracoes.marca = argumentos.marca;
+        if (argumentos.modelo !== undefined) alteracoes.modelo = argumentos.modelo;
+        if (argumentos.ano !== undefined) alteracoes.anoFabricacao = Number(argumentos.ano);
+        if (argumentos.peso !== undefined) alteracoes.pesoQuilogramas = Number(argumentos.peso);
+
+        exigir(Object.keys(alteracoes).length > 0, 'Informe ao menos um campo para atualizar.');
+
+        await servico.atualizarEquipamento(
+          argumentos.id ?? argumentos._0 ?? '',
+          alteracoes,
+          usuarioAtual,
+        );
+
+        console.log('Equipamento atualizado.');
+      } else if (entidade === 'equipamento' && acao === 'excluir') {
+        exigir(pode(papelAtual, 'estoque'), 'Sem permissão para excluir equipamentos.');
+
+        await servico.excluirEquipamento(
+          argumentos.id ?? argumentos._0 ?? '',
+          usuarioAtual,
+        );
+
+        console.log('Equipamento excluído.');
       } else if (entidade === 'triagem' && acao === 'iniciar') {
         exigir(pode(papelAtual, 'estoque'), 'Sem permissão para iniciar triagem.');
 
@@ -713,7 +882,10 @@ async function main(): Promise<void> {
           );
         } else if (acao === 'financeiro') {
           const organizacoesAtivas = estado.organizacoes.filter(
-            (item) => item.ativo && item.contratoVigente,
+            (item) =>
+              item.ativo &&
+              item.contratoVigente &&
+              item.contratoVigente.ativo !== false,
           );
 
           console.log(

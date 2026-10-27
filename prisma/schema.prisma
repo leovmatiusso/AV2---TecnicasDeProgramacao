@@ -1,0 +1,160 @@
+generator client {
+  provider = "prisma-client-js"
+}
+
+datasource db {
+  provider = "postgresql"
+  url      = env("DATABASE_URL")
+}
+
+enum PapelUsuario {
+  ADMINISTRADOR
+  OPERADOR_CADASTRO
+  GESTOR_ALMOXARIFADO
+  AUDITOR
+}
+
+enum TipoEquipamento {
+  COMPUTADOR_MESA
+  NOTEBOOK
+  MONITOR
+  IMPRESSORA
+  SERVIDOR
+  ROTEADOR
+  CABO_ESTRUTURADO
+  FONTE_ALIMENTACAO
+}
+
+enum EstadoFisico {
+  NOVO
+  BOM_ESTADO
+  USADO_LEVE
+  USADO_MODERADO
+  DANIFICADO_LEVE
+  DANIFICADO_GRAVE
+  INSERVIVEL
+}
+
+enum StatusLote {
+  RECEBIDO
+  EM_TRIAGEM
+  TRIAGEM_CONCLUIDA
+  ENCAMINHADO
+  FINALIZADO
+}
+
+enum StatusRastreamento {
+  AGUARDANDO_TRIAGEM
+  EM_TRIAGEM
+  AGUARDANDO_DESMONTE
+  EM_DESMONTE
+  PECAS_REAPROVEITADAS
+  MATERIAL_RECICLAVEL
+  DESCARTE_SEGURO
+  BAIXA_DEFINITIVA
+}
+
+model Usuario {
+  id           String        @id @default(uuid()) @db.Uuid
+  nomeUsuario  String        @unique @db.VarChar(32)
+  hashSenha    String        @db.VarChar(255)
+  papel        PapelUsuario
+  ativo        Boolean       @default(true)
+  versao       Int           @default(1)
+  criadoEm     DateTime      @default(now()) @db.Timestamptz(3)
+  auditorias   Auditoria[]
+}
+
+model Organizacao {
+  id                 String    @id @default(uuid()) @db.Uuid
+  razaoSocial        String    @db.VarChar(200)
+  cnpj               String    @unique @db.VarChar(14)
+  inscricaoEstadual  String    @default("") @db.VarChar(30)
+  enderecoCompleto  String    @default("") @db.VarChar(300)
+  telefone           String    @default("") @db.VarChar(30)
+  email              String    @db.VarChar(254)
+  dataCadastro      DateTime  @default(now()) @db.Timestamptz(3)
+  ativo              Boolean   @default(true)
+  versao             Int       @default(1)
+  contratoVigente   Contrato?
+  lotes              Lote[]
+}
+
+model Contrato {
+  id                  String      @id @default(uuid()) @db.Uuid
+  organizacaoId       String      @unique @db.Uuid
+  dataAssinatura      DateTime    @default(now()) @db.Timestamptz(3)
+  dataVencimento      DateTime    @db.Date
+  clausulas           String[]
+  valorMensal         Decimal     @db.Decimal(12, 2)
+  renovacaoAutomatica Boolean     @default(false)
+  ativo               Boolean     @default(true)
+  versao              Int         @default(1)
+  organizacao         Organizacao @relation(fields: [organizacaoId], references: [id], onDelete: Restrict)
+}
+
+model Lote {
+  id                  String       @id @default(uuid()) @db.Uuid
+  dataEntrada         DateTime     @db.Date
+  organizacaoId       String       @db.Uuid
+  notaFiscal          String       @db.VarChar(80)
+  transportadora      String       @db.VarChar(160)
+  statusProcessamento StatusLote   @default(RECEBIDO)
+  observacoes         String       @default("") @db.VarChar(2000)
+  triagemConcluida    Boolean      @default(false)
+  versao              Int          @default(1)
+  organizacao         Organizacao  @relation(fields: [organizacaoId], references: [id], onDelete: Restrict)
+  equipamentos        Equipamento[]
+
+  @@index([organizacaoId, dataEntrada])
+  @@index([statusProcessamento])
+}
+
+model Equipamento {
+  id                   String              @id @default(uuid()) @db.Uuid
+  codigoBarrasInterno  String              @unique @db.VarChar(40)
+  tipo                 TipoEquipamento
+  marca                String              @db.VarChar(100)
+  modelo               String              @db.VarChar(100)
+  anoFabricacao        Int
+  estadoFisico         EstadoFisico
+  pesoQuilogramas      Decimal             @db.Decimal(10, 3)
+  loteId               String              @db.Uuid
+  posicaoNoLote        Int
+  statusRastreamento   StatusRastreamento  @default(AGUARDANDO_TRIAGEM)
+  versao               Int                 @default(1)
+  lote                 Lote                @relation(fields: [loteId], references: [id], onDelete: Restrict)
+  movimentacoes        Movimentacao[]
+
+  @@unique([loteId, posicaoNoLote])
+  @@index([loteId, statusRastreamento])
+}
+
+model Movimentacao {
+  id             String             @id @default(uuid()) @db.Uuid
+  equipamentoId  String             @db.Uuid
+  dataHora       DateTime           @default(now()) @db.Timestamptz(3)
+  origem         StatusRastreamento
+  destino        StatusRastreamento
+  responsavel    String             @db.VarChar(100)
+  observacao     String             @default("") @db.VarChar(1000)
+  versao         Int                @default(1)
+  equipamento    Equipamento        @relation(fields: [equipamentoId], references: [id], onDelete: Restrict)
+
+  @@index([equipamentoId, dataHora])
+}
+
+model Auditoria {
+  id             String    @id @default(uuid()) @db.Uuid
+  entidade       String    @db.VarChar(80)
+  entidadeId     String    @db.VarChar(80)
+  operacao       String    @db.VarChar(40)
+  dadosAntes     Json?
+  dadosDepois    Json?
+  usuarioId      String?   @db.Uuid
+  ocorridoEm     DateTime  @default(now()) @db.Timestamptz(3)
+  versao         Int       @default(1)
+  usuario        Usuario?  @relation(fields: [usuarioId], references: [id], onDelete: SetNull)
+
+  @@index([entidade, entidadeId, ocorridoEm])
+}

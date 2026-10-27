@@ -1,7 +1,6 @@
 import {
   mkdir,
   readFile,
-  rename,
   stat,
   readdir,
   unlink,
@@ -15,7 +14,7 @@ import {
   type Estado,
   type JournalTransacao,
 } from './domain.js';
-import { cifrar, decifrar, gravarPrivado } from './security.js';
+import { cifrar, decifrar, gravarPrivado, renomearComTentativas } from './security.js';
 
 const MAX_JOURNAL = 10 * 1024 * 1024;
 const RETENCAO_DIAS = 180;
@@ -48,6 +47,31 @@ const aplicarTransacao = (estado: Estado, entrada: JournalTransacao): void => {
     colecao[indice] = dadosDepois as { id?: string };
   } else {
     colecao.push(dadosDepois as { id?: string });
+  }
+
+  if (entrada.entidade === 'Equipamento') {
+    const equipamentoAnterior = dadosOrigem as { id?: string; loteId?: string } | null;
+    const equipamentoNovo = dadosDepois as { id?: string; loteId?: string } | null;
+
+    if (equipamentoAnterior?.loteId && equipamentoAnterior.loteId !== equipamentoNovo?.loteId) {
+      const loteAnterior = estado.lotes.find(
+        (lote) => lote.id === equipamentoAnterior.loteId,
+      );
+
+      if (loteAnterior) {
+        loteAnterior.equipamentoIds = loteAnterior.equipamentoIds.filter(
+          (idEquipamento) => idEquipamento !== equipamentoAnterior.id,
+        );
+      }
+    }
+
+    if (equipamentoNovo?.loteId) {
+      const loteNovo = estado.lotes.find((lote) => lote.id === equipamentoNovo.loteId);
+
+      if (loteNovo && !loteNovo.equipamentoIds.includes(String(equipamentoNovo.id))) {
+        loteNovo.equipamentoIds.push(String(equipamentoNovo.id));
+      }
+    }
   }
 
   if (entrada.entidade === 'Contrato' && dadosDepois) {
@@ -209,7 +233,7 @@ export class RepositorioArquivo {
       const temporario = `${caminho}.tmp`;
 
       await gravarPrivado(temporario, cifrar(dados, this.chave));
-      await rename(temporario, caminho);
+      await renomearComTentativas(temporario, caminho);
     }
   }
 
@@ -277,7 +301,7 @@ export class RepositorioArquivo {
       if (informacoes.size > MAX_JOURNAL) {
         const dia = nome.slice(8, 18);
         const rotacionado = join(this.dir, `journal-${dia}-${Date.now()}.log`);
-        await rename(caminho, rotacionado);
+        await renomearComTentativas(caminho, rotacionado);
       }
     }
   }

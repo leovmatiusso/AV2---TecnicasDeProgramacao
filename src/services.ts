@@ -2,6 +2,7 @@ import {
   ErroNegocio,
   estadosFisicos,
   idNovo,
+  papeis,
   statusRastreamento,
   tiposEquipamento,
   type Credencial,
@@ -135,6 +136,50 @@ export class ServicoDominio {
     );
   }
 
+  async alterarPapel(
+    usuario: string,
+    papel: PapelUsuario,
+    responsavel: string,
+  ): Promise<void> {
+    exigir(papeis.includes(papel), 'Papel inválido.');
+
+    const antes = this.estado().credenciais.find(
+      (item) => item.usuario.toLowerCase() === usuario.toLowerCase(),
+    );
+
+    exigir(antes, 'Usuário não encontrado.');
+
+    if (
+      antes.ativo &&
+      antes.papel === 'ADMINISTRADOR' &&
+      papel !== 'ADMINISTRADOR'
+    ) {
+      const administradoresAtivos = this.estado().credenciais.filter(
+        (item) => item.ativo && item.papel === 'ADMINISTRADOR',
+      );
+      exigir(
+        administradoresAtivos.length > 1,
+        'Não é possível remover o papel do último administrador ativo.',
+      );
+    }
+
+    const depois = { ...antes, papel };
+
+    await this.repo.transacionar(
+      'ALTERAR_PAPEL',
+      'Credencial',
+      antes,
+      depois,
+      responsavel,
+      (estado) => {
+        const credencial = estado.credenciais.find(
+          (item) => item.usuario === antes.usuario,
+        )!;
+        credencial.papel = papel;
+      },
+    );
+  }
+
   async cadastrarOrganizacao(
     input: Omit<Organizacao, 'id' | 'dataCadastro' | 'ativo' | 'contratoVigente'>,
     usuario: string,
@@ -173,6 +218,54 @@ export class ServicoDominio {
     return organizacao;
   }
 
+  async atualizarOrganizacao(
+    id: string,
+    alteracoes: Partial<
+      Pick<
+        Organizacao,
+        | 'razaoSocial'
+        | 'cnpj'
+        | 'inscricaoEstadual'
+        | 'enderecoCompleto'
+        | 'telefone'
+        | 'email'
+      >
+    >,
+    usuario: string,
+  ): Promise<Organizacao> {
+    const antes = await this.buscarOrganizacao(id);
+    const depois = { ...antes, ...alteracoes };
+
+    exigir(depois.razaoSocial.trim().length > 1, 'Razão social é obrigatória.');
+    exigir(/^\S+@\S+\.\S+$/.test(depois.email), 'E-mail inválido.');
+    exigir(
+      new ValidadorCNPJ().validar(depois.cnpj),
+      new ValidadorCNPJ().obterMensagemErro(),
+    );
+    exigir(
+      !this.estado().organizacoes.some(
+        (item) =>
+          item.id !== antes.id &&
+          item.cnpj.replace(/\D/g, '') === depois.cnpj.replace(/\D/g, ''),
+      ),
+      'Já existe organização com este CNPJ.',
+    );
+
+    await this.repo.transacionar(
+      'ATUALIZAR',
+      'Organizacao',
+      antes,
+      depois,
+      usuario,
+      (estado) => {
+        const indice = estado.organizacoes.findIndex((item) => item.id === antes.id);
+        estado.organizacoes[indice] = depois;
+      },
+    );
+
+    return depois;
+  }
+
   async criarContrato(
     organizacaoId: string,
     dataVencimento: string,
@@ -184,6 +277,10 @@ export class ServicoDominio {
     );
 
     exigir(organizacao, 'Organização não encontrada.');
+    exigir(
+      !organizacao.contratoVigente || organizacao.contratoVigente.ativo === false,
+      'A organização já possui um contrato ativo.',
+    );
     exigir(
       Number.isFinite(Date.parse(dataVencimento)) &&
         Date.parse(dataVencimento) >= Date.now(),
@@ -199,6 +296,7 @@ export class ServicoDominio {
       clausulas: [],
       valorMensal,
       renovacaoAutomatica: false,
+      ativo: true,
     };
 
     await this.repo.transacionar(
@@ -261,6 +359,70 @@ export class ServicoDominio {
     );
 
     return lote;
+  }
+
+  async atualizarLote(
+    id: string,
+    alteracoes: Partial<Pick<Lote, 'notaFiscal' | 'transportadora' | 'observacoes' | 'dataEntrada'>>,
+    usuario: string,
+  ): Promise<Lote> {
+    const antes = this.estado().lotes.find((item) => item.id === id);
+
+    exigir(antes, 'Lote não encontrado.');
+    exigir(
+      antes.statusProcessamento === 'RECEBIDO',
+      'Só é possível atualizar um lote antes do início da triagem.',
+    );
+
+    const depois = { ...antes, ...alteracoes };
+
+    exigir(depois.notaFiscal.trim().length > 0, 'Nota fiscal é obrigatória.');
+    exigir(depois.transportadora.trim().length > 0, 'Transportadora é obrigatória.');
+
+    if (alteracoes.dataEntrada !== undefined) {
+      const validador = new ValidadorDataEntrada();
+      exigir(validador.validar(depois.dataEntrada), validador.obterMensagemErro());
+      depois.dataEntrada = new Date(depois.dataEntrada).toISOString();
+    }
+
+    await this.repo.transacionar(
+      'ATUALIZAR',
+      'Lote',
+      antes,
+      depois,
+      usuario,
+      (estado) => {
+        const indice = estado.lotes.findIndex((item) => item.id === id);
+        estado.lotes[indice] = depois;
+      },
+    );
+
+    return depois;
+  }
+
+  async excluirLote(id: string, usuario: string): Promise<void> {
+    const antes = this.estado().lotes.find((item) => item.id === id);
+
+    exigir(antes, 'Lote não encontrado.');
+    exigir(
+      antes.equipamentoIds.length === 0,
+      'Não é possível excluir um lote que possui equipamentos.',
+    );
+    exigir(
+      antes.statusProcessamento === 'RECEBIDO',
+      'Só é possível excluir um lote antes do início da triagem.',
+    );
+
+    await this.repo.transacionar(
+      'EXCLUIR',
+      'Lote',
+      antes,
+      null,
+      usuario,
+      (estado) => {
+        estado.lotes = estado.lotes.filter((item) => item.id !== id);
+      },
+    );
   }
 
   async criarEquipamento(
@@ -329,6 +491,87 @@ export class ServicoDominio {
     );
 
     return equipamento;
+  }
+
+  async atualizarEquipamento(
+    id: string,
+    alteracoes: Partial<
+      Pick<Equipamento, 'tipo' | 'marca' | 'modelo' | 'anoFabricacao' | 'pesoQuilogramas'>
+    >,
+    usuario: string,
+  ): Promise<Equipamento> {
+    const antes = this.estado().equipamentos.find(
+      (item) => item.id === id || item.codigoBarrasInterno === id,
+    );
+
+    exigir(antes, 'Equipamento não encontrado.');
+
+    const depois = { ...antes, ...alteracoes };
+    exigir(tiposEquipamento.includes(depois.tipo), 'Tipo de equipamento inválido.');
+    exigir(
+      depois.marca.trim().length > 0 && depois.modelo.trim().length > 0,
+      'Marca e modelo são obrigatórios.',
+    );
+    exigir(
+      Number.isInteger(depois.anoFabricacao) &&
+        depois.anoFabricacao >= 1970 &&
+        depois.anoFabricacao <= new Date().getFullYear(),
+      'Ano de fabricação inválido.',
+    );
+    exigir(
+      Number.isFinite(depois.pesoQuilogramas) && depois.pesoQuilogramas > 0,
+      'Peso deve ser maior que zero.',
+    );
+
+    await this.repo.transacionar(
+      'ATUALIZAR',
+      'Equipamento',
+      antes,
+      depois,
+      usuario,
+      (estado) => {
+        const indice = estado.equipamentos.findIndex((item) => item.id === antes.id);
+        estado.equipamentos[indice] = depois;
+      },
+    );
+
+    return depois;
+  }
+
+  async excluirEquipamento(id: string, usuario: string): Promise<void> {
+    const antes = this.estado().equipamentos.find(
+      (item) => item.id === id || item.codigoBarrasInterno === id,
+    );
+
+    exigir(antes, 'Equipamento não encontrado.');
+    exigir(
+      antes.historicoMovimentacao.length === 0,
+      'Não é possível excluir equipamento com movimentações registradas.',
+    );
+    exigir(
+      antes.statusRastreamento === 'AGUARDANDO_TRIAGEM',
+      'Só é possível excluir equipamento antes da triagem.',
+    );
+
+    await this.repo.transacionar(
+      'EXCLUIR',
+      'Equipamento',
+      antes,
+      null,
+      usuario,
+      (estado) => {
+        estado.equipamentos = estado.equipamentos.filter(
+          (item) => item.id !== antes.id,
+        );
+        const lote = estado.lotes.find((item) => item.id === antes.loteId);
+
+        if (lote) {
+          lote.equipamentoIds = lote.equipamentoIds.filter(
+            (equipamentoId) => equipamentoId !== antes.id,
+          );
+        }
+      },
+    );
   }
 
   async iniciarTriagem(loteId: string, usuario: string): Promise<void> {
@@ -550,6 +793,7 @@ export class ServicoDominio {
     const contrato = organizacao.contratoVigente;
 
     exigir(contrato, 'Organização não tem contrato vigente.');
+    exigir(contrato.ativo !== false, 'O contrato está cancelado.');
     exigir(
       Number.isFinite(Date.parse(vencimento)) &&
         Date.parse(vencimento) > Date.parse(contrato.dataVencimento),
@@ -577,6 +821,41 @@ export class ServicoDominio {
           (registro) =>
             registro.id === organizacaoId ||
             registro.cnpj.replace(/\D/g, '') === organizacaoId.replace(/\D/g, ''),
+        );
+
+        if (item) {
+          item.contratoVigente = depois;
+        }
+      },
+    );
+  }
+
+  async cancelarContrato(
+    organizacaoId: string,
+    responsavel: string,
+  ): Promise<void> {
+    const organizacao = await this.buscarOrganizacao(organizacaoId);
+    const contrato = organizacao.contratoVigente;
+
+    exigir(contrato, 'Organização não tem contrato para cancelar.');
+    exigir(contrato.ativo !== false, 'O contrato já está cancelado.');
+
+    const antes = structuredClone(contrato);
+    const depois = { ...contrato, ativo: false };
+
+    await this.repo.transacionar(
+      'CANCELAR',
+      'Contrato',
+      antes,
+      depois,
+      responsavel,
+      (estado) => {
+        estado.contratos = estado.contratos.map((item) =>
+          item.id === contrato.id ? depois : item,
+        );
+
+        const item = estado.organizacoes.find(
+          (registro) => registro.id === organizacao.id,
         );
 
         if (item) {

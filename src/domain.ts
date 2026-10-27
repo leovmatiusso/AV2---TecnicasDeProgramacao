@@ -71,6 +71,7 @@ export interface Contrato {
   clausulas: string[];
   valorMensal: number;
   renovacaoAutomatica: boolean;
+  ativo?: boolean;
 }
 
 export interface Lote {
